@@ -333,9 +333,13 @@ function isUnplayableEmbed(item: MediaItem): boolean {
 
 /** Single resolver for viewer + prefetch, so warmed bytes are the bytes rendered. */
 function getViewerSrc(item: MediaItem): string {
-    return isVideoMedia(item)
-        ? normalizeUrl(item.url)
-        : (getStillSrc(item) ?? normalizeUrl(item.url));
+    if (!isVideoMedia(item)) return getStillSrc(item) ?? normalizeUrl(item.url);
+    const direct = normalizeUrl(item.url);
+    // Discord's media-src CSP blocks third-party video hosts; their proxied copy is allowed.
+    try {
+        if (/(^|\.)discordapp\.(com|net)$/.test(new URL(direct).hostname) || !item.proxyUrl) return direct;
+    } catch {}
+    return normalizeUrl(item.proxyUrl ?? direct);
 }
 
 /**
@@ -462,7 +466,10 @@ function extractMediaFromMessage(msg: any): MediaItem[] {
         // Order matters. Video first, so a gifv/Tenor embed that also ships a thumbnail is recorded
         // as the animated media rather than its still frame.
         const candidates: any[] = [];
-        if (e.video?.url) candidates.push(e.video);
+        // A third-party video with no Discord proxy copy is CSP-blocked; its thumbnail still shows.
+        const blockedVideo = e.video?.url && !(e.video.proxyURL || e.video.proxy_url)
+            && !/^https?:\/\/([^/]+\.)?(discordapp\.(com|net)|tenor\.com?|giphy\.com|klipy\.com)\//.test(normalizeUrl(e.video.url));
+        if (e.video?.url && !blockedVideo) candidates.push(e.video);
         if (e.image?.url) candidates.push(e.image);
         // `images` (plural) is a real field for multi-image embeds and was never read at all.
         if (Array.isArray(e.images)) candidates.push(...e.images.filter((i: any) => i?.url));
@@ -490,6 +497,28 @@ function extractMediaFromMessage(msg: any): MediaItem[] {
             );
         }
     });
+
+    // Bots like Bleed post through message components: media galleries, thumbnails and files,
+    // possibly nested inside containers and sections, with no attachments or embeds at all.
+    type ComponentMedia = { url?: string; proxy_url?: string; content_type?: string; width?: number; height?: number; };
+    type MessageComponent = {
+        media?: ComponentMedia;
+        file?: ComponentMedia;
+        items?: { media?: ComponentMedia; }[];
+        components?: MessageComponent[];
+        accessory?: MessageComponent;
+    };
+    const walkComponents = (components: MessageComponent[] = []) => {
+        for (const c of components) {
+            for (const m of [c.media, c.file, ...(c.items?.map(i => i.media) ?? [])]) {
+                if (isUsableMediaUrl(m?.url) && (/^(image|video)\//.test(m.content_type ?? "") || IMAGE_EXT_RE.test(m.url) || VIDEO_EXT_RE.test(m.url)))
+                    addMedia(m.url, false, undefined, m.proxy_url, m.width, m.height);
+            }
+            walkComponents(c.components);
+            if (c.accessory) walkComponents([c.accessory]);
+        }
+    };
+    walkComponents(msg.components);
 
     return items;
 }
@@ -1461,7 +1490,9 @@ function GalleryModal({ channel, forumScope, modalProps }: { channel: any; forum
 
         // Shared by every lazy media element; the observer swaps data-src -> src when visible.
         const mediaProps = {
-            "data-src": getQualityUrl(item.url, gifQuality),
+            "data-src": getQualityUrl(item.url, gifQuality) === normalizeUrl(item.url)
+                ? getViewerSrc(item)
+                : getQualityUrl(item.url, gifQuality),
             "data-vc-gallery-lazy": "1",
             className: "vc-gallery-media",
             ref: registerMedia,
