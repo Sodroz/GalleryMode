@@ -406,7 +406,8 @@ function getQualityUrl(url: string, qualityLevel: number) {
     return cleanUrl;
 }
 
-function extractMediaFromMessage(msg: any): MediaItem[] {
+// `source` is where media is read from; ids always come from `msg`, so forwarded media jumps to the forward.
+function extractMediaFromMessage(msg: any, source: any = msg): MediaItem[] {
     const items: MediaItem[] = [];
     const seenKeys = new Set<string>();
     const isGiphyEmbed = (embed: any) => embed?.url?.includes("giphy") || embed?.provider?.name === "Giphy";
@@ -437,7 +438,7 @@ function extractMediaFromMessage(msg: any): MediaItem[] {
         });
     };
 
-    msg.attachments?.forEach((a: any) => {
+    source.attachments?.forEach((a: any) => {
         const url = a.url || a.proxy_url;
         if (!url) return;
 
@@ -453,7 +454,7 @@ function extractMediaFromMessage(msg: any): MediaItem[] {
         }
     });
 
-    msg.embeds?.forEach((e: any) => {
+    source.embeds?.forEach((e: any) => {
         const isTenor = e.provider?.name === "Tenor" || !!e.url?.includes("tenor");
         const isAnimated = (media: any) =>
             e.type === "gifv" || isTenor || isGiphyEmbed(e) || IMAGE_GIF_RE.test(media?.url || "");
@@ -518,7 +519,11 @@ function extractMediaFromMessage(msg: any): MediaItem[] {
             if (c.accessory) walkComponents([c.accessory]);
         }
     };
-    walkComponents(msg.components);
+    walkComponents(source.components);
+
+    // Forwards carry their media inside message_snapshots, in the same shape as a normal message.
+    if (source === msg) msg.message_snapshots?.forEach((s: { message: unknown; }) =>
+        items.push(...extractMediaFromMessage(msg, s.message).filter(i => !seenKeys.has(i.key))));
 
     return items;
 }
