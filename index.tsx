@@ -129,7 +129,7 @@ const settings = definePluginSettings({
     },
     cacheTtlMinutes: {
         type: OptionType.NUMBER,
-        description: "Minutes to remember gallery position after closing (0 = disabled)",
+        description: "Minutes to remember a gallery's results and position, counted from when they were loaded (0 = disabled)",
         default: 5,
     },
     prefetchNextPage: {
@@ -761,6 +761,9 @@ function GalleryModal({ channel, forumScope, modalProps }: { channel: any; forum
     const fetchModeRef = useRef<"idle" | "visible" | "prefetch">("idle");
     const inflightPromiseRef = useRef<Promise<PageResult | null> | null>(null);
     const inflightCursorKeyRef = useRef<string | null>(null);
+    // When the saved results were loaded. Closing must not refresh it, or a gallery reopened
+    // often enough would never fetch new posts.
+    const loadedAtRef = useRef(cachedState?.timestamp ?? Date.now());
 
     const stateRef = useRef<GalleryCache>({
         mediaItems: [],
@@ -831,7 +834,7 @@ function GalleryModal({ channel, forumScope, modalProps }: { channel: any; forum
                 channelCacheMap.set(galleryCacheKey, {
                     ...stateRef.current,
                     scrollTop: scrollTopRef.current,
-                    timestamp: Date.now(),
+                    timestamp: loadedAtRef.current,
                 });
             }
             if (channelCacheMap.size > 50) {
@@ -1338,6 +1341,7 @@ function GalleryModal({ channel, forumScope, modalProps }: { channel: any; forum
         }
         invalidatePrefetch();
         channelCacheMap.delete(galleryCacheKey);
+        loadedAtRef.current = Date.now();
         resetGalleryState(filter);
         fetchOlderMessages(true, filter);
     };
